@@ -129,8 +129,7 @@ class FallbackModel(Model):
 
 def _default_fallback_condition_factory(exceptions: tuple[type[Exception], ...]) -> Callable[[Exception], bool]:
     """Create a default fallback condition for the given exceptions."""
-
-    def fallback_condition(exception: Exception) -> bool:
-        return isinstance(exception, exceptions)
-
+    # Bind 'exceptions' as a default argument to avoid closure lookup
+    def fallback_condition(exception: Exception, _exceptions=exceptions) -> bool:
+        return isinstance(exception, _exceptions)
     return fallback_condition
