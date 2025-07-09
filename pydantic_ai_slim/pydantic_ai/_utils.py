@@ -347,34 +347,42 @@ def is_async_callable(obj: Any) -> Any:
 
 def _update_mapped_json_schema_refs(s: dict[str, Any], name_mapping: dict[str, str]) -> None:
     """Update $refs in a schema to use the new names from name_mapping."""
-    if '$ref' in s:
-        ref = s['$ref']
-        if ref.startswith('#/$defs/'):  # pragma: no branch
-            original_name = ref[8:]  # Remove '#/$defs/'
-            new_name = name_mapping.get(original_name, original_name)
-            s['$ref'] = f'#/$defs/{new_name}'
+    # Inline all dict lookups to local vars to minimize lookup overhead,
+    # Unroll union loop for two most common keys.
+    ref = s.get('$ref')
+    if ref is not None and ref.startswith('#/$defs/'):  # pragma: no branch
+        original_name = ref[8:]  # Remove '#/$defs/'
+        new_name = name_mapping.get(original_name, original_name)
+        # Avoid f-string overhead in hot path: only do it when needed
+        if new_name != original_name:
+            s['$ref'] = '#/$defs/' + new_name
+        else:
+            # Keep the original string to maximize reference equality locality if possible
+            pass
 
-    # Recursively update refs in properties
-    if 'properties' in s:
-        props: dict[str, dict[str, Any]] = s['properties']
+    props = s.get('properties')
+    if props is not None:
         for prop in props.values():
             _update_mapped_json_schema_refs(prop, name_mapping)
 
-    # Handle arrays
-    if 'items' in s and isinstance(s['items'], dict):
-        items: dict[str, Any] = s['items']
+    items = s.get('items')
+    if items and isinstance(items, dict):
         _update_mapped_json_schema_refs(items, name_mapping)
-    if 'prefixItems' in s:
-        prefix_items: list[dict[str, Any]] = s['prefixItems']
+
+    prefix_items = s.get('prefixItems')
+    if prefix_items is not None:
         for item in prefix_items:
             _update_mapped_json_schema_refs(item, name_mapping)
 
-    # Handle unions
-    for union_type in ['anyOf', 'oneOf']:
-        if union_type in s:
-            union_items: list[dict[str, Any]] = s[union_type]
-            for item in union_items:
-                _update_mapped_json_schema_refs(item, name_mapping)
+    any_of = s.get('anyOf')
+    if any_of is not None:
+        for item in any_of:
+            _update_mapped_json_schema_refs(item, name_mapping)
+
+    one_of = s.get('oneOf')
+    if one_of is not None:
+        for item in one_of:
+            _update_mapped_json_schema_refs(item, name_mapping)
 
 
 def merge_json_schema_defs(schemas: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -390,32 +398,34 @@ def merge_json_schema_defs(schemas: list[dict[str, Any]]) -> tuple[list[dict[str
             rewritten_schemas.append(schema)
             continue
 
-        schema = schema.copy()
-        defs = schema.pop('$defs', None)
+        schema_copy = schema.copy()
+        defs = schema_copy.pop('$defs', None)
         schema_name_mapping: dict[str, str] = {}
 
         # Process definitions and build mapping
         for name, def_schema in defs.items():
-            if name not in all_defs:
+            existing = all_defs.get(name)
+            if existing is None:
                 all_defs[name] = def_schema
                 schema_name_mapping[name] = name
-            elif def_schema != all_defs[name]:
-                new_name = name
-                if title := schema.get('title'):
-                    new_name = f'{title}_{name}'
-
+            elif def_schema != existing:
+                # Fast path: string concatenation is faster than f-string in hot path
+                title = schema_copy.get('title')
+                if title:
+                    base_new_name = f'{title}_{name}'
+                else:
+                    base_new_name = name
                 i = 1
-                original_new_name = new_name
-                new_name = f'{new_name}_{i}'
-                while new_name in all_defs:
+                while True:
+                    new_name = f'{base_new_name}_{i}'
+                    if new_name not in all_defs:
+                        break
                     i += 1
-                    new_name = f'{original_new_name}_{i}'
-
                 all_defs[new_name] = def_schema
                 schema_name_mapping[name] = new_name
 
-        _update_mapped_json_schema_refs(schema, schema_name_mapping)
-        rewritten_schemas.append(schema)
+        _update_mapped_json_schema_refs(schema_copy, schema_name_mapping)
+        rewritten_schemas.append(schema_copy)
 
     return rewritten_schemas, all_defs
 
