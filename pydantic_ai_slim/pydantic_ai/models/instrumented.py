@@ -350,20 +350,23 @@ class InstrumentedModel(WrapperModel):
 
     @staticmethod
     def model_attributes(model: Model):
+        base_url = model.base_url
         attributes: dict[str, AttributeValue] = {
             GEN_AI_SYSTEM_ATTRIBUTE: model.system,
             GEN_AI_REQUEST_MODEL_ATTRIBUTE: model.model_name,
         }
-        if base_url := model.base_url:
+        if base_url:
             try:
                 parsed = urlparse(base_url)
             except Exception:  # pragma: no cover
                 pass
             else:
-                if parsed.hostname:  # pragma: no branch
-                    attributes['server.address'] = parsed.hostname
-                if parsed.port:  # pragma: no branch
-                    attributes['server.port'] = parsed.port
+                hostname = parsed.hostname
+                port = parsed.port
+                if hostname:  # pragma: no branch
+                    attributes['server.address'] = hostname
+                if port:  # pragma: no branch
+                    attributes['server.port'] = port
 
         return attributes
 
