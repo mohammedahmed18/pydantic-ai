@@ -2,6 +2,8 @@ import base64
 from collections.abc import Sequence
 from typing import Literal
 
+from mcp import types as mcp_types
+
 from . import exceptions, messages
 
 try:
@@ -103,13 +105,16 @@ def map_from_pai_messages(pai_messages: list[messages.ModelMessage]) -> tuple[st
 
 def map_from_model_response(model_response: messages.ModelResponse) -> mcp_types.TextContent:
     """Convert from a model response to MCP text content."""
+    # Cache TextPart type for faster isinstance checks in tight loops
+    TextPart = messages.TextPart
     text_parts: list[str] = []
     for part in model_response.parts:
-        if isinstance(part, messages.TextPart):
+        if isinstance(part, TextPart):
             text_parts.append(part.content)
         # TODO(Marcelo): We should ignore ThinkingPart here.
         else:
             raise exceptions.UnexpectedModelBehavior(f'Unexpected part type: {type(part).__name__}, expected TextPart')
+    # Use ''.join for efficient string concatenation (already present)
     return mcp_types.TextContent(type='text', text=''.join(text_parts))
 
 
