@@ -579,7 +579,16 @@ class ModelRequest:
     @classmethod
     def user_text_prompt(cls, user_prompt: str, *, instructions: str | None = None) -> ModelRequest:
         """Create a `ModelRequest` with a single user prompt as text."""
-        return cls(parts=[UserPromptPart(user_prompt)], instructions=instructions)
+        # Avoid creating a temporary list and instance repeatedly by using tuple and __new__
+        # However, dataclass __init__ is optimized for direct call.
+        # If UserPromptPart is a dataclass/attrs, skip tricks; just hoist lookup.
+        global _UserPromptPart
+        try:
+            _UserPromptPart
+        except NameError:
+            from pydantic_ai_slim.pydantic_ai.messages import UserPromptPart
+            _UserPromptPart = UserPromptPart
+        return cls(parts=[_UserPromptPart(user_prompt)], instructions=instructions)
 
     __repr__ = _utils.dataclasses_no_defaults_repr
 
