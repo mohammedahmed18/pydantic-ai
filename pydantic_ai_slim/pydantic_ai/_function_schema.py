@@ -263,17 +263,24 @@ def _build_schema(
     Returns:
         tuple of (generated core schema, single arg name).
     """
-    if len(fields) == 1 and var_kwargs_schema is None:
-        name = next(iter(fields))
+    fields_len = len(fields)
+    if fields_len == 1 and var_kwargs_schema is None:
+        # Fast path for exactly one field without var kwargs
+        name, = fields
         td_field = fields[name]
-        if td_field['metadata']['is_model_like']:  # type: ignore
+        metadata = td_field['metadata']
+        if metadata['is_model_like']:  # type: ignore
             return td_field['schema'], name
+
+    extras_schema = None
+    if var_kwargs_schema is not None:
+        extras_schema = gen_schema.generate_schema(var_kwargs_schema)
 
     td_schema = core_schema.typed_dict_schema(
         fields,
         config=core_config,
         total=var_kwargs_schema is None,
-        extras_schema=gen_schema.generate_schema(var_kwargs_schema) if var_kwargs_schema else None,
+        extras_schema=extras_schema,
     )
     return td_schema, None
 
