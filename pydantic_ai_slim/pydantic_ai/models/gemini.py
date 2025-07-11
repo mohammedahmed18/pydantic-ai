@@ -611,16 +611,18 @@ def _content_model_response(m: ModelResponse) -> _GeminiContent:
     for item in m.parts:
         if isinstance(item, ToolCallPart):
             parts.append(_function_call_part_from_call(item))
-        elif isinstance(item, ThinkingPart):
+            continue
+        if isinstance(item, ThinkingPart):
             # NOTE: We don't send ThinkingPart to the providers yet. If you are unsatisfied with this,
             # please open an issue. The below code is the code to send thinking to the provider.
             # parts.append(_GeminiTextPart(text=item.content, thought=True))
-            pass
-        elif isinstance(item, TextPart):
-            if item.content:
-                parts.append(_GeminiTextPart(text=item.content))
-        else:
-            assert_never(item)
+            continue
+        if isinstance(item, TextPart):
+            content = item.content
+            if content:
+                parts.append(_GeminiTextPart(text=content))
+            continue
+        assert_never(item)
     return _GeminiContent(role='model', parts=parts)
 
 
