@@ -18,24 +18,20 @@ class JsonSchemaTransformer(ABC):
     Note: We may eventually want to rework tools to build the JSON schema from the type directly, using a subclass of
     pydantic.json_schema.GenerateJsonSchema, rather than making use of this machinery.
     """
-
     def __init__(
         self,
-        schema: JsonSchema,
+        schema: 'JsonSchema',
         *,
         strict: bool | None = None,
         prefer_inlined_defs: bool = False,
         simplify_nullable_unions: bool = False,
     ):
         self.schema = schema
-
         self.strict = strict
-        self.is_strict_compatible = True  # Can be set to False by subclasses to set `strict` on `ToolDefinition` when set not set by user explicitly
-
+        self.is_strict_compatible = True
         self.prefer_inlined_defs = prefer_inlined_defs
         self.simplify_nullable_unions = simplify_nullable_unions
-
-        self.defs: dict[str, JsonSchema] = self.schema.get('$defs', {})
+        self.defs: dict[str, 'JsonSchema'] = schema.get('$defs', {})
         self.refs_stack: list[str] = []
         self.recursive_refs = set[str]()
 
@@ -158,22 +154,22 @@ class JsonSchemaTransformer(ABC):
 
     @staticmethod
     def _simplify_nullable_union(cases: list[JsonSchema]) -> list[JsonSchema]:
-        # TODO: Should we move this to relevant subclasses? Or is it worth keeping here to make reuse easier?
-        if len(cases) == 2 and {'type': 'null'} in cases:
-            # Find the non-null schema
-            non_null_schema = next(
-                (item for item in cases if item != {'type': 'null'}),
-                None,
-            )
-            if non_null_schema:
-                # Create a new schema based on the non-null part, mark as nullable
-                new_schema = deepcopy(non_null_schema)
+        # Only optimize when exactly two items and one is the null type
+        NULL_TYPE_SCHEMA = {'type': 'null'}
+        if len(cases) == 2 and NULL_TYPE_SCHEMA in cases:
+            non_null_schema = cases[0] if cases[1] == NULL_TYPE_SCHEMA else cases[1] if cases[0] == NULL_TYPE_SCHEMA else None
+            if non_null_schema and non_null_schema != NULL_TYPE_SCHEMA:
+                # Instead of deepcopy, copy only if truly required
+                if isinstance(non_null_schema, dict):
+                    # If there's chance of mutation elsewhere, copy shallow is safe here (shallow is enough since only to set 'nullable')
+                    new_schema = dict(non_null_schema)
+                else:
+                    # Defensive fallback, reuses as is if not dict (should not really happen)
+                    new_schema = non_null_schema
                 new_schema['nullable'] = True
                 return [new_schema]
             else:  # pragma: no cover
-                # they are both null, so just return one of them
                 return [cases[0]]
-
         return cases
 
 
