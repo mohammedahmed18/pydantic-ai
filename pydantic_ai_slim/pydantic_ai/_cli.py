@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from rich.console import Console
+from rich.syntax import Syntax
 from typing_inspection.introspection import get_literal_values
 
 from . import __version__
@@ -315,23 +317,25 @@ def handle_slash_command(
     ident_prompt: str, messages: list[ModelMessage], multiline: bool, console: Console, code_theme: str
 ) -> tuple[int | None, bool]:
     if ident_prompt == '/markdown':
+        # Fast path for missing messages
         try:
             parts = messages[-1].parts
         except IndexError:
             console.print('[dim]No markdown output available.[/dim]')
-        else:
+            return None, multiline
+        # Only print "header" if there is any part to output
+        if parts:
             console.print('[dim]Markdown output of last question:[/dim]\n')
+            # Cache Syntax as local and do a single print for all markdowns to minimize per-call overhead
+            append = []
+            syntax_kwargs = dict(lexer='markdown', theme=code_theme, word_wrap=True, background_color='default')
             for part in parts:
                 if part.part_kind == 'text':
-                    console.print(
-                        Syntax(
-                            part.content,
-                            lexer='markdown',
-                            theme=code_theme,
-                            word_wrap=True,
-                            background_color='default',
-                        )
-                    )
+                    append.append(Syntax(part.content, **syntax_kwargs))
+            if append:
+                # Batch print for all markdown texts (reduces print and Syntax construction overhead)
+                console.print(*append)
+        return None, multiline
 
     elif ident_prompt == '/multiline':
         multiline = not multiline
@@ -342,9 +346,13 @@ def handle_slash_command(
         else:
             console.print('Disabling multiline mode.')
         return None, multiline
+
     elif ident_prompt == '/exit':
         console.print('[dim]Exiting…[/dim]')
         return 0, multiline
+
     else:
         console.print(f'[red]Unknown command[/red] [magenta]`{ident_prompt}`[/magenta]')
+        return None, multiline
+
     return None, multiline
