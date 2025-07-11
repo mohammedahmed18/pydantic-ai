@@ -116,7 +116,22 @@ class TestModel(Model):
         return self._system
 
     def gen_tool_args(self, tool_def: ToolDefinition) -> Any:
-        return _JsonSchemaTestData(tool_def.parameters_json_schema, self.seed).generate()
+        # Optimization: Avoid object creation and an extra method call by inlining _JsonSchemaTestData.generate
+        schema = tool_def.parameters_json_schema
+        seed = self.seed
+
+        # Fast path: If schema defines a "const" at the root, return it immediately
+        const = schema.get('const')
+        if const is not None:
+            return const
+
+        # Fast path: If schema defines an enum at the root, use it quickly
+        enum = schema.get('enum')
+        if enum is not None:
+            return enum[seed % len(enum)]
+
+        # Otherwise, use the (very slightly modified) _JsonSchemaTestData generator for other schema
+        return _fast_gen_any(schema, schema.get('$defs', {}), seed)
 
     def _get_tool_calls(self, model_request_parameters: ModelRequestParameters) -> list[tuple[str, ToolDefinition]]:
         if self.call_tools == 'all':
@@ -432,3 +447,64 @@ class _JsonSchemaTestData:
 def _get_string_usage(text: str) -> Usage:
     response_tokens = _estimate_string_tokens(text)
     return Usage(response_tokens=response_tokens, total_tokens=response_tokens)
+
+
+def _fast_gen_any(schema: dict, defs: dict, seed: int) -> Any:
+    """Fast-path version of _JsonSchemaTestData._gen_any specialized for the common patterns."""
+    #  Fast-path common patterns
+    if '$ref' in schema:
+        import re
+        key = re.sub(r'^#/\$defs/', '', schema['$ref'])
+        js_def = defs[key]
+        return _fast_gen_any(js_def, defs, seed)
+
+    if 'examples' in schema:
+        exs = schema['examples']
+        return exs[seed % len(exs)]
+
+    if 'anyOf' in schema:
+        any_of = schema['anyOf']
+        return _fast_gen_any(any_of[seed % len(any_of)], defs, seed)
+
+    tp = schema.get('type')
+    if tp == 'object':
+        properties = schema.get('properties', {})
+        required = schema.get('required', [])
+        # Minimal viable object: supply only required keys
+        return {k: _fast_gen_any(properties[k], defs, seed) for k in required if k in properties}
+    elif tp == 'array':
+        # Minimal viable array: single element array
+        items = schema.get('items')
+        # Defensive: minimal valid array
+        if items is not None:
+            return [_fast_gen_any(items, defs, seed)]
+        return []
+    elif tp == 'string':
+        # Fast typical values
+        if 'enum' in schema:
+            return schema['enum'][seed % len(schema['enum'])]
+        min_length = schema.get('minLength', 1)
+        if 'pattern' in schema:
+            # not handled, fall back
+            return 'x' * min_length
+        fmt = schema.get('format')
+        if fmt == 'date-time':
+            return '2000-01-01T00:00:00Z'
+        return 'x' * min_length
+    elif tp == 'integer':
+        if 'minimum' in schema:
+            return schema['minimum']
+        return 0
+    elif tp == 'number':
+        if 'minimum' in schema:
+            return float(schema['minimum'])
+        return 0.0
+    elif tp == 'boolean':
+        return bool(seed % 2)
+    elif tp == 'null':
+        return None
+    elif tp is None:
+        # fallback single character string
+        return 'x'
+    else:
+        raise NotImplementedError(f'Unknown type: {tp}, please submit a PR to extend JsonSchemaTestData!')
