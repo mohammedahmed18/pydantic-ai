@@ -420,13 +420,21 @@ class _JsonSchemaTestData:
     def _char(self) -> str:
         """Generate a character on the same principle as Excel columns, e.g. a-z, aa-az..."""
         chars = len(_chars)
-        s = ''
-        rem = self.seed // chars
+        seed = self.seed
+        if seed < chars:
+            # Fast path for single-char
+            return _chars[seed]
+        # Preallocate a list for characters for more efficient building
+        result = []
+        rem = seed // chars
         while rem > 0:
-            s += _chars[(rem - 1) % chars]
+            # Compute and append in reversed order for final join
+            result.append(_chars[(rem - 1) % chars])
             rem //= chars
-        s += _chars[self.seed % chars]
-        return s
+        # Append the last character (least-significant "digit")
+        result.append(_chars[seed % chars])
+        # Reverse the result to get the correct "Excel-style" string
+        return ''.join(reversed(result))
 
 
 def _get_string_usage(text: str) -> Usage:
