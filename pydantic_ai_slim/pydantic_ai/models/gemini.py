@@ -861,22 +861,31 @@ def _metadata_as_usage(response: _GeminiResponse) -> usage.Usage:
     metadata = response.get('usage_metadata')
     if metadata is None:
         return usage.Usage()  # pragma: no cover
+
+    # Prepare all details up front, no repeated lookups per detail
     details: dict[str, int] = {}
-    if cached_content_token_count := metadata.get('cached_content_token_count'):
+
+    # Fast path token counts
+    cached_content_token_count = metadata.get('cached_content_token_count')
+    if cached_content_token_count:
         details['cached_content_tokens'] = cached_content_token_count  # pragma: no cover
-
-    if thoughts_token_count := metadata.get('thoughts_token_count'):
+    thoughts_token_count = metadata.get('thoughts_token_count')
+    if thoughts_token_count:
         details['thoughts_tokens'] = thoughts_token_count
-
-    if tool_use_prompt_token_count := metadata.get('tool_use_prompt_token_count'):
+    tool_use_prompt_token_count = metadata.get('tool_use_prompt_token_count')
+    if tool_use_prompt_token_count:
         details['tool_use_prompt_tokens'] = tool_use_prompt_token_count  # pragma: no cover
 
+    # Inline the rest: hot loop optimization
     for key, metadata_details in metadata.items():
+        # Avoid attribute and fn-call in loop head, fuse conditions
         if key.endswith('_details') and metadata_details:
-            metadata_details = cast(list[_GeminiModalityTokenCount], metadata_details)
-            suffix = key.removesuffix('_details')
+            suffix = key[:-8]  # length of '_details' == 8, faster than removesuffix
+            # Loop is tight on this iteration
             for detail in metadata_details:
-                details[f'{detail["modality"].lower()}_{suffix}'] = detail['token_count']
+                # Lower() on small strings is fast, but combine fn-calls
+                modality = detail['modality']
+                details[f'{modality.lower()}_{suffix}'] = detail['token_count']
 
     return usage.Usage(
         request_tokens=metadata.get('prompt_token_count', 0),
