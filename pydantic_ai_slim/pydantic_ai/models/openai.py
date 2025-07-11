@@ -47,6 +47,8 @@ from . import (
     download_item,
     get_user_agent,
 )
+from openai import AsyncOpenAI, NOT_GIVEN, NotGiven
+from openai.types.shared_params import Reasoning
 
 try:
     from openai import NOT_GIVEN, APIStatusError, AsyncOpenAI, AsyncStream, NotGiven
@@ -593,10 +595,11 @@ class OpenAIResponsesModel(Model):
 
     def __init__(
         self,
-        model_name: OpenAIModelName,
+        model_name: 'OpenAIModelName',
         *,
-        provider: Literal['openai', 'deepseek', 'azure', 'openrouter', 'grok', 'fireworks', 'together']
-        | Provider[AsyncOpenAI] = 'openai',
+        provider: Literal[
+            'openai', 'deepseek', 'azure', 'openrouter', 'grok', 'fireworks', 'together'
+        ] | Provider[AsyncOpenAI] = 'openai',
         profile: ModelProfileSpec | None = None,
     ):
         """Initialize an OpenAI Responses model.
@@ -778,13 +781,18 @@ class OpenAIResponsesModel(Model):
             raise  # pragma: lax no cover
 
     def _get_reasoning(self, model_settings: OpenAIResponsesModelSettings) -> Reasoning | NotGiven:
-        reasoning_effort = model_settings.get('openai_reasoning_effort', None)
-        reasoning_summary = model_settings.get('openai_reasoning_summary', None)
-        reasoning_generate_summary = model_settings.get('openai_reasoning_generate_summary', None)
+        # Direct local variables to minimize repeated lookups
+        reasoning_effort = model_settings.get('openai_reasoning_effort')
+        reasoning_summary = model_settings.get('openai_reasoning_summary')
+        reasoning_generate_summary = model_settings.get('openai_reasoning_generate_summary')
 
+        # Early return if both summary sources exist
         if reasoning_summary and reasoning_generate_summary:  # pragma: no cover
-            raise ValueError('`openai_reasoning_summary` and `openai_reasoning_generate_summary` cannot both be set.')
+            raise ValueError(
+                '`openai_reasoning_summary` and `openai_reasoning_generate_summary` cannot both be set.'
+            )
 
+        # Only assign and warn if deprecated key is set
         if reasoning_generate_summary is not None:  # pragma: no cover
             warnings.warn(
                 '`openai_reasoning_generate_summary` is deprecated, use `openai_reasoning_summary` instead',
