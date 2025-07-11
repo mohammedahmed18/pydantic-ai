@@ -432,3 +432,10 @@ class _JsonSchemaTestData:
 def _get_string_usage(text: str) -> Usage:
     response_tokens = _estimate_string_tokens(text)
     return Usage(response_tokens=response_tokens, total_tokens=response_tokens)
+
+def _fast_tokenize(text: str) -> list[str]:
+    return text.translate(_TRANS_TABLE).split()
+
+_SPLIT_CHARS = '",.:'
+
+_TRANS_TABLE = str.maketrans({c: ' ' for c in _SPLIT_CHARS})
