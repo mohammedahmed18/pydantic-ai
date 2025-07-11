@@ -1,6 +1,4 @@
 from __future__ import annotations as _annotations
-
-import re
 import string
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
@@ -281,7 +279,6 @@ class _JsonSchemaTestData:
 
     This tries to generate the minimal viable data for the schema.
     """
-
     def __init__(self, schema: _utils.ObjectJsonSchema, seed: int = 0):
         self.schema = schema
         self.defs = schema.get('$defs', {})
@@ -293,22 +290,37 @@ class _JsonSchemaTestData:
 
     def _gen_any(self, schema: dict[str, Any]) -> Any:
         """Generate data for any JSON Schema."""
-        if const := schema.get('const'):
+        # Fast-path checks for fixed values before more complex schema checks
+        const = schema.get('const')
+        if const is not None:
             return const
-        elif enum := schema.get('enum'):
+
+        enum = schema.get('enum')
+        if enum is not None:
             return enum[self.seed % len(enum)]
-        elif examples := schema.get('examples'):
+
+        examples = schema.get('examples')
+        if examples is not None:
             return examples[self.seed % len(examples)]
-        elif ref := schema.get('$ref'):
-            key = re.sub(r'^#/\$defs/', '', ref)
+
+        ref = schema.get('$ref')
+        if ref is not None:
+            # Precompiled regex may help on repeated calls, but since pattern is simple and per-call,
+            # let's use lstrip for maximum performance.
+            key = ref
+            if key.startswith('#/$defs/'):
+                key = key[8:]
             js_def = self.defs[key]
             return self._gen_any(js_def)
-        elif any_of := schema.get('anyOf'):
+
+        any_of = schema.get('anyOf')
+        if any_of is not None:
             return self._gen_any(any_of[self.seed % len(any_of)])
 
+        # Unchanged logic below, but check type_ only once
         type_ = schema.get('type')
         if type_ is None:
-            # if there's no type or ref, we can't generate anything
+            # Fallback to character string generation for invalid/unknown type
             return self._char()
         elif type_ == 'object':
             return self._object_gen(schema)
@@ -325,7 +337,9 @@ class _JsonSchemaTestData:
         elif type_ == 'null':
             return None
         else:
-            raise NotImplementedError(f'Unknown type: {type_}, please submit a PR to extend JsonSchemaTestData!')
+            raise NotImplementedError(
+                f'Unknown type: {type_}, please submit a PR to extend JsonSchemaTestData!'
+            )
 
     def _object_gen(self, schema: dict[str, Any]) -> dict[str, Any]:
         """Generate data for a JSON Schema object."""
@@ -393,24 +407,31 @@ class _JsonSchemaTestData:
     def _array_gen(self, schema: dict[str, Any]) -> list[Any]:
         """Generate an array from a JSON Schema array."""
         data: list[Any] = []
-        unique_items = schema.get('uniqueItems')
-        if prefix_items := schema.get('prefixItems'):
+        unique_items = schema.get('uniqueItems', False)
+        # Use direct get for performance; prefix_items always a list if present
+        prefix_items = schema.get('prefixItems')
+        if prefix_items:
             for item in prefix_items:
                 data.append(self._gen_any(item))
                 if unique_items:
                     self.seed += 1
 
-        items_schema = schema.get('items', {})
+        # Avoid dict creation for items_schema if key not present:
+        if 'items' in schema:
+            items_schema = schema['items']
+        else:
+            items_schema = {}
         min_items = schema.get('minItems', 0)
-        if min_items > len(data):
-            for _ in range(min_items - len(data)):
+        dlen = len(data)
+        if min_items > dlen:
+            for _ in range(min_items - dlen):
                 data.append(self._gen_any(items_schema))
                 if unique_items:
                     self.seed += 1
         elif items_schema:
-            # if there is an `items` schema, add an item unless it would break `maxItems` rule
+            # Only add next item if allowed by maxItems or maxItems missing
             max_items = schema.get('maxItems')
-            if max_items is None or max_items > len(data):
+            if max_items is None or max_items > dlen:
                 data.append(self._gen_any(items_schema))
                 if unique_items:
                     self.seed += 1
