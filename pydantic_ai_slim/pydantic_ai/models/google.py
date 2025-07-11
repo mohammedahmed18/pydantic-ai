@@ -42,6 +42,7 @@ from . import (
     download_item,
     get_user_agent,
 )
+from google.genai.types import Part
 
 try:
     from google import genai
@@ -508,23 +509,41 @@ def _process_response_from_parts(
     vendor_id: str | None,
     vendor_details: dict[str, Any] | None = None,
 ) -> ModelResponse:
+    # The bulk of time is spent in the ToolCallPart constructor - optimize this loop.
     items: list[ModelResponsePart] = []
+    append = items.append  # local var for speedup
+    TextPart_ = TextPart
+    ThinkingPart_ = ThinkingPart
+    ToolCallPart_ = ToolCallPart
+
     for part in parts:
-        if part.text is not None:
+        t = part.text
+        if t is not None:
             if part.thought:
-                items.append(ThinkingPart(content=part.text))
+                append(ThinkingPart_(content=t))
             else:
-                items.append(TextPart(content=part.text))
-        elif part.function_call:
-            assert part.function_call.name is not None
-            tool_call_part = ToolCallPart(tool_name=part.function_call.name, args=part.function_call.args)
-            if part.function_call.id is not None:
-                tool_call_part.tool_call_id = part.function_call.id  # pragma: no cover
-            items.append(tool_call_part)
-        elif part.function_response:  # pragma: no cover
+                append(TextPart_(content=t))
+            continue
+
+        fc = part.function_call
+        if fc:
+            name = fc.name
+            assert name is not None
+            # Avoid keyword arguments for fastest cython/cpython construction
+            tool_call_part = ToolCallPart_.__new__(ToolCallPart_)
+            # Direct attribute assignment to minimize constructor overhead
+            tool_call_part.tool_name = name
+            tool_call_part.args = fc.args
+            if fc.id is not None:
+                tool_call_part.tool_call_id = fc.id  # pragma: no cover
+            append(tool_call_part)
+            continue
+
+        if part.function_response:  # pragma: no cover
             raise UnexpectedModelBehavior(
                 f'Unsupported response from Gemini, expected all parts to be function calls or text, got: {part!r}'
             )
+
     return ModelResponse(
         parts=items, model_name=model_name, usage=usage, vendor_id=vendor_id, vendor_details=vendor_details
     )
