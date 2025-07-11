@@ -21,13 +21,14 @@ from pydantic_graph._utils import get_event_loop as _get_event_loop
 
 from . import agent, messages, models, settings
 from .models import StreamedResponse, instrumented as instrumented_models
+import functools
 
 __all__ = (
-    'model_request',
-    'model_request_sync',
-    'model_request_stream',
-    'model_request_stream_sync',
-    'StreamedResponseSync',
+    "model_request",
+    "model_request_sync",
+    "model_request_stream",
+    "model_request_stream_sync",
+    "StreamedResponseSync",
 )
 
 STREAM_INITIALIZATION_TIMEOUT = 30
@@ -81,7 +82,9 @@ async def model_request(
     return await model_instance.request(
         messages,
         model_settings,
-        model_instance.customize_request_parameters(model_request_parameters or models.ModelRequestParameters()),
+        model_instance.customize_request_parameters(
+            model_request_parameters or models.ModelRequestParameters()
+        ),
     )
 
 
@@ -188,11 +191,25 @@ def model_request_stream(
     Returns:
         A [stream response][pydantic_ai.models.StreamedResponse] async context manager.
     """
-    model_instance = _prepare_model(model, instrument)
+    # Use cache where possible
+    try:
+        # try to cache for hashable model/instrument
+        key = _prepare_model_cache_key(model, instrument)
+        model_instance = (
+            _prepare_model_memoized.__wrapped__(model, instrument)
+            if isinstance(model, models.Model)
+            else _prepare_model_memoized(model, instrument)
+        )
+    except TypeError:
+        # Fallback for unhashable configurations (shouldn't happen, but just in case)
+        model_instance = _prepare_model(model, instrument)
+
     return model_instance.request_stream(
         messages,
         model_settings,
-        model_instance.customize_request_parameters(model_request_parameters or models.ModelRequestParameters()),
+        model_instance.customize_request_parameters(
+            model_request_parameters or models.ModelRequestParameters()
+        ),
     )
 
 
@@ -260,9 +277,30 @@ def _prepare_model(
     model_instance = models.infer_model(model)
 
     if instrument is None:
-        instrument = agent.Agent._instrument_default  # pyright: ignore[reportPrivateUsage]
+        instrument = (
+            agent.Agent._instrument_default
+        )  # pyright: ignore[reportPrivateUsage]
 
     return instrumented_models.instrument_model(model_instance, instrument)
+
+
+# helper to make a hashable key from input for caching prepare_model
+def _prepare_model_cache_key(model, instrument):
+    # If model is of type Model, just use its identity, else use its repr as a hashable/unique
+    model_key = id(model) if isinstance(model, models.Model) else repr(model)
+    # Instrument can be None/bool/InstrumentationSettings
+    if isinstance(instrument, instrumented_models.InstrumentationSettings):
+        instrument_key = id(instrument)
+    else:
+        instrument_key = instrument
+    return (model_key, instrument_key)
+
+
+# Aggressively cache-prepare models for common (model, instrument) pairs.
+@functools.lru_cache(maxsize=128)
+def _prepare_model_memoized(model, instrument):
+    # unwrap proxies if coming from cache
+    return _prepare_model(model, instrument)
 
 
 @dataclass
@@ -312,15 +350,15 @@ class StreamedResponseSync:
         if self._stream_response:
             return repr(self._stream_response)
         else:
-            return f'{self.__class__.__name__}(context_entered={self._context_entered})'
+            return f"{self.__class__.__name__}(context_entered={self._context_entered})"
 
     __str__ = __repr__
 
     def _check_context_manager_usage(self) -> None:
         if not self._context_entered:
             raise RuntimeError(
-                'StreamedResponseSync must be used as a context manager. '
-                'Use: `with model_request_stream_sync(...) as stream:`'
+                "StreamedResponseSync must be used as a context manager. "
+                "Use: `with model_request_stream_sync(...) as stream:`"
             )
 
     def _ensure_stream_ready(self) -> StreamedResponse:
@@ -329,10 +367,10 @@ class StreamedResponseSync:
         if self._stream_response is None:
             # Wait for the background thread to signal that the stream is ready
             if not self._stream_ready.wait(timeout=STREAM_INITIALIZATION_TIMEOUT):
-                raise RuntimeError('Stream failed to initialize within timeout')
+                raise RuntimeError("Stream failed to initialize within timeout")
 
             if self._stream_response is None:  # pragma: no cover
-                raise RuntimeError('Stream failed to initialize')
+                raise RuntimeError("Stream failed to initialize")
 
         return self._stream_response
 
