@@ -34,6 +34,7 @@ from ..providers import Provider, infer_provider
 from ..settings import ModelSettings
 from ..tools import ToolDefinition
 from . import Model, ModelRequestParameters, StreamedResponse, check_allow_model_requests, download_item, get_user_agent
+from anthropic.types.beta import BetaMessage, BetaRawMessageDeltaEvent, BetaRawMessageStartEvent, BetaRawMessageStreamEvent
 
 try:
     from anthropic import NOT_GIVEN, APIStatusError, AsyncAnthropic, AsyncStream
@@ -422,39 +423,48 @@ class AnthropicModel(Model):
 
 
 def _map_usage(message: BetaMessage | BetaRawMessageStreamEvent) -> usage.Usage:
-    if isinstance(message, BetaMessage):
+    # Fast path for most common cases; combine type checks & reference fields directly to avoid unnecessary checks later.
+    msg_type = type(message)
+    if msg_type is BetaMessage:
         response_usage = message.usage
-    elif isinstance(message, BetaRawMessageStartEvent):
+    elif msg_type is BetaRawMessageStartEvent:
         response_usage = message.message.usage
-    elif isinstance(message, BetaRawMessageDeltaEvent):
+    elif msg_type is BetaRawMessageDeltaEvent:
         response_usage = message.usage
     else:
-        # No usage information provided in:
-        # - RawMessageStopEvent
-        # - RawContentBlockStartEvent
-        # - RawContentBlockDeltaEvent
-        # - RawContentBlockStopEvent
+        # No usage information provided in other event/message types, simply return early.
         return usage.Usage()
 
-    # Store all integer-typed usage values in the details, except 'output_tokens' which is represented exactly by
-    # `response_tokens`
-    details: dict[str, int] = {
-        key: value for key, value in response_usage.model_dump().items() if isinstance(value, int)
-    }
+    # Use local variable and single-pass dictionary comprehension for efficiency.
+    usage_dict = response_usage.model_dump()
+    # Inline the filter and simultaneously extract frequently used keys to avoid repeated dict lookups.
+    details = {}
+    input_tokens = 0
+    cache_creation_input_tokens = 0
+    cache_read_input_tokens = 0
+    output_tokens = None
 
-    # Usage coming from the RawMessageDeltaEvent doesn't have input token data, hence using `get`
-    # Tokens are only counted once between input_tokens, cache_creation_input_tokens, and cache_read_input_tokens
-    # This approach maintains request_tokens as the count of all input tokens, with cached counts as details
-    request_tokens = (
-        details.get('input_tokens', 0)
-        + details.get('cache_creation_input_tokens', 0)
-        + details.get('cache_read_input_tokens', 0)
-    )
+    for key, value in usage_dict.items():
+        if isinstance(value, int):
+            details[key] = value
+            if key == 'input_tokens':
+                input_tokens = value
+            elif key == 'cache_creation_input_tokens':
+                cache_creation_input_tokens = value
+            elif key == 'cache_read_input_tokens':
+                cache_read_input_tokens = value
+            elif key == 'output_tokens':
+                output_tokens = value
 
+    # request_tokens calculated by summing.
+    request_tokens = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+
+    # BetaRawMessageDeltaEvent might not have input tokens, so must support the pattern of 'get'-like access.
+    # Continue using 'or None' for the same API behavior.
     return usage.Usage(
         request_tokens=request_tokens or None,
-        response_tokens=response_usage.output_tokens,
-        total_tokens=request_tokens + response_usage.output_tokens,
+        response_tokens=output_tokens,
+        total_tokens=(request_tokens + output_tokens) if output_tokens is not None else None,
         details=details or None,
     )
 
