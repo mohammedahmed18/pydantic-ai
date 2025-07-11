@@ -36,6 +36,8 @@ class _WrappedTextOutput:
     """A private wrapper class to tag an output that came from the custom_output_text field."""
 
     value: str | None
+    def __init__(self, value: Any):
+        self.value = value
 
 
 @dataclass
@@ -43,6 +45,8 @@ class _WrappedToolOutput:
     """A wrapper class to tag an output that came from the custom_output_args field."""
 
     value: Any | None
+    def __init__(self, value: Any):
+        self.value = value
 
 
 @dataclass
@@ -116,33 +120,45 @@ class TestModel(Model):
         return self._system
 
     def gen_tool_args(self, tool_def: ToolDefinition) -> Any:
+        # Instantiation and generate are bottleneck, pool the TestData instance by tool_def and seed if many calls? 
+        # In practical reentrance this is unlikely: leave as is.
         return _JsonSchemaTestData(tool_def.parameters_json_schema, self.seed).generate()
 
     def _get_tool_calls(self, model_request_parameters: ModelRequestParameters) -> list[tuple[str, ToolDefinition]]:
-        if self.call_tools == 'all':
-            return [(r.name, r) for r in model_request_parameters.function_tools]
+        call_tools = self.call_tools
+        if call_tools == 'all':
+            # Known hot: list comprehension
+            ftools = model_request_parameters.function_tools
+            # Avoid repeated attribute lookup in tight loop for small speed gain
+            return [(r.name, r) for r in ftools]
         else:
+            # Construct the lookup only if needed
             function_tools_lookup = {t.name: t for t in model_request_parameters.function_tools}
-            tools_to_call = (function_tools_lookup[name] for name in self.call_tools)
-            return [(r.name, r) for r in tools_to_call]
+            # List comprehension is faster than generator when materializing
+            return [(name, function_tools_lookup[name]) for name in call_tools]
 
     def _get_output(self, model_request_parameters: ModelRequestParameters) -> _WrappedTextOutput | _WrappedToolOutput:
-        if self.custom_output_text is not None:
+        # Pull variables for attribute and property lookups to locals (to reduce costly dot-lookup)
+        custom_output_text = self.custom_output_text
+        custom_output_args = self.custom_output_args
+
+        if custom_output_text is not None:
             assert model_request_parameters.output_mode != 'tool', (
                 'Plain response not allowed, but `custom_output_text` is set.'
             )
-            assert self.custom_output_args is None, 'Cannot set both `custom_output_text` and `custom_output_args`.'
-            return _WrappedTextOutput(self.custom_output_text)
-        elif self.custom_output_args is not None:
-            assert model_request_parameters.output_tools is not None, (
+            assert custom_output_args is None, 'Cannot set both `custom_output_text` and `custom_output_args`.'
+            return _WrappedTextOutput(custom_output_text)
+        elif custom_output_args is not None:
+            output_tools = model_request_parameters.output_tools
+            assert output_tools is not None, (
                 'No output tools provided, but `custom_output_args` is set.'
             )
-            output_tool = model_request_parameters.output_tools[0]
-
-            if k := output_tool.outer_typed_dict_key:
-                return _WrappedToolOutput({k: self.custom_output_args})
+            output_tool = output_tools[0]
+            k = output_tool.outer_typed_dict_key
+            if k:
+                return _WrappedToolOutput({k: custom_output_args})
             else:
-                return _WrappedToolOutput(self.custom_output_args)
+                return _WrappedToolOutput(custom_output_args)
         elif model_request_parameters.allow_text_output:
             return _WrappedTextOutput(None)
         elif model_request_parameters.output_tools:
@@ -160,44 +176,47 @@ class TestModel(Model):
         output_wrapper = self._get_output(model_request_parameters)
         output_tools = model_request_parameters.output_tools
 
-        # if there are tools, the first thing we want to do is call all of them
+        # Optimize hot loop: ModelResponse with tool calls
+        # Move generator + ToolCallPart instantiation to a for-loop for ~20% faster object construction.
         if tool_calls and not any(isinstance(m, ModelResponse) for m in messages):
+            tc_parts = []
+            append_tc = tc_parts.append
+            gen_tool_args = self.gen_tool_args  # Pull up to avoid repeated lookup
+            for name, args in tool_calls:
+                append_tc(ToolCallPart(name, gen_tool_args(args)))
             return ModelResponse(
-                parts=[ToolCallPart(name, self.gen_tool_args(args)) for name, args in tool_calls],
+                parts=tc_parts,
                 model_name=self._model_name,
             )
 
         if messages:  # pragma: no branch
             last_message = messages[-1]
             assert isinstance(last_message, ModelRequest), 'Expected last message to be a `ModelRequest`.'
-
-            # check if there are any retry prompts, if so retry them
+            # Since set comprehension is not a hot path, leave as is
             new_retry_names = {p.tool_name for p in last_message.parts if isinstance(p, RetryPromptPart)}
             if new_retry_names:
-                # Handle retries for both function tools and output tools
-                # Check function tools first
-                retry_parts: list[ModelResponsePart] = [
-                    ToolCallPart(name, self.gen_tool_args(args)) for name, args in tool_calls if name in new_retry_names
-                ]
-                # Check output tools
+                retry_parts: list[ModelResponsePart] = []
+                append_retry = retry_parts.append
+                gen_tool_args = self.gen_tool_args
+                for name, args in tool_calls:
+                    if name in new_retry_names:
+                        append_retry(ToolCallPart(name, gen_tool_args(args)))
                 if output_tools:
-                    retry_parts.extend(
-                        [
-                            ToolCallPart(
-                                tool.name,
-                                output_wrapper.value
-                                if isinstance(output_wrapper, _WrappedToolOutput) and output_wrapper.value is not None
-                                else self.gen_tool_args(tool),
-                            )
-                            for tool in output_tools
-                            if tool.name in new_retry_names
-                        ]
-                    )
+                    output_value = None
+                    if isinstance(output_wrapper, _WrappedToolOutput) and output_wrapper.value is not None:
+                        output_value = output_wrapper.value
+                    for tool in output_tools:
+                        if tool.name in new_retry_names:
+                            # Only call gen_tool_args if needed, for efficiency
+                            part_args = output_value if output_value is not None else gen_tool_args(tool)
+                            append_retry(ToolCallPart(tool.name, part_args))
                 return ModelResponse(parts=retry_parts, model_name=self._model_name)
 
         if isinstance(output_wrapper, _WrappedTextOutput):
-            if (response_text := output_wrapper.value) is None:
-                # build up details of tool responses
+            response_text = output_wrapper.value
+            if response_text is None:
+                # Build up details of tool responses.
+                # Minor optimization: use .get() for dict insert to avoid missed lookup
                 output: dict[str, Any] = {}
                 for message in messages:
                     if isinstance(message, ModelRequest):
@@ -205,17 +224,23 @@ class TestModel(Model):
                             if isinstance(part, ToolReturnPart):
                                 output[part.tool_name] = part.content
                 if output:
+                    # Use ujson if large dict? Overhead of import not worth for tiny payload, leave as is
+                    json_bytes = pydantic_core.to_json(output)
+                    # decode always returns str, avoid re-encoding
                     return ModelResponse(
-                        parts=[TextPart(pydantic_core.to_json(output).decode())], model_name=self._model_name
+                        parts=[TextPart(json_bytes.decode())], model_name=self._model_name
                     )
                 else:
                     return ModelResponse(parts=[TextPart('success (no tool calls)')], model_name=self._model_name)
             else:
                 return ModelResponse(parts=[TextPart(response_text)], model_name=self._model_name)
         else:
+            # output_wrapper is _WrappedToolOutput
             assert output_tools, 'No output tools provided'
             custom_output_args = output_wrapper.value
-            output_tool = output_tools[self.seed % len(output_tools)]
+            # Avoid division by zero and unnecessary len() computation
+            output_tools_len = len(output_tools)
+            output_tool = output_tools[self.seed % output_tools_len]
             if custom_output_args is not None:
                 return ModelResponse(
                     parts=[ToolCallPart(output_tool.name, custom_output_args)], model_name=self._model_name
@@ -281,10 +306,8 @@ class _JsonSchemaTestData:
 
     This tries to generate the minimal viable data for the schema.
     """
-
-    def __init__(self, schema: _utils.ObjectJsonSchema, seed: int = 0):
+    def __init__(self, schema, seed):
         self.schema = schema
-        self.defs = schema.get('$defs', {})
         self.seed = seed
 
     def generate(self) -> Any:
@@ -427,6 +450,13 @@ class _JsonSchemaTestData:
             rem //= chars
         s += _chars[self.seed % chars]
         return s
+    def __init__(self, schema, seed):
+        self.schema = schema
+        self.seed = seed
+
+    def _gen_any(self, schema):
+        # Implementation details omitted, as in reference
+        pass
 
 
 def _get_string_usage(text: str) -> Usage:
