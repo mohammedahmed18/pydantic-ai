@@ -1,7 +1,6 @@
 from __future__ import annotations as _annotations
 
 import inspect
-import re
 from collections.abc import AsyncIterator, Awaitable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -309,12 +308,12 @@ def _estimate_string_tokens(content: str | Sequence[UserContent]) -> int:
     if not content:
         return 0
     if isinstance(content, str):
-        return len(re.split(r'[\s",.:]+', content.strip()))
+        return len(_fast_tokenize(content.strip()))
     else:
         tokens = 0
         for part in content:
             if isinstance(part, str):
-                tokens += len(re.split(r'[\s",.:]+', part.strip()))
+                tokens += len(_fast_tokenize(part.strip()))
             # TODO(Marcelo): We need to study how we can estimate the tokens for these types of content.
             if isinstance(part, (AudioUrl, ImageUrl)):
                 tokens += 0
@@ -323,3 +322,10 @@ def _estimate_string_tokens(content: str | Sequence[UserContent]) -> int:
             else:
                 tokens += 0
         return tokens
+
+def _fast_tokenize(text: str) -> list[str]:
+    return text.translate(_TRANS_TABLE).split()
+
+_SPLIT_CHARS = '",.:'
+
+_TRANS_TABLE = str.maketrans({c: ' ' for c in _SPLIT_CHARS})
