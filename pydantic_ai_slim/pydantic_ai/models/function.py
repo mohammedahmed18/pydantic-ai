@@ -347,12 +347,21 @@ def _estimate_string_tokens(content: str | Sequence[UserContent]) -> int:
         return 0
 
     if isinstance(content, str):
-        return len(_TOKEN_SPLIT_RE.split(content.strip()))
+        # Fast path using translate and split instead of regex when separators are simple chars
+        s = content.strip()
+        if s:
+            s = s.translate(_translate_table)
+            # Split on whitespace (default). This handles multiple consecutive separators as per regex "+"
+            return len(s.split())
+        return 0
 
     tokens = 0
     for part in content:
         if isinstance(part, str):
-            tokens += len(_TOKEN_SPLIT_RE.split(part.strip()))
+            s = part.strip()
+            if s:
+                s = s.translate(_translate_table)
+                tokens += len(s.split())
         elif isinstance(part, BinaryContent):
             tokens += len(part.data)
         # TODO(Marcelo): We need to study how we can estimate the tokens for AudioUrl or ImageUrl.
@@ -361,3 +370,5 @@ def _estimate_string_tokens(content: str | Sequence[UserContent]) -> int:
 
 
 _TOKEN_SPLIT_RE = re.compile(r'[\s",.:]+')
+
+_translate_table = {ord(c): ord(' ') for c in ' \t\n\r\x0b\x0c",.:'}
