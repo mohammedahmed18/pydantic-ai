@@ -347,17 +347,32 @@ def _estimate_string_tokens(content: str | Sequence[UserContent]) -> int:
         return 0
 
     if isinstance(content, str):
-        return len(_TOKEN_SPLIT_RE.split(content.strip()))
+        return _count_tokens_fast(content)
 
-    tokens = 0
-    for part in content:
+    def _part_tokens(part):
         if isinstance(part, str):
-            tokens += len(_TOKEN_SPLIT_RE.split(part.strip()))
+            return _count_tokens_fast(part)
         elif isinstance(part, BinaryContent):
-            tokens += len(part.data)
+            return len(part.data)
         # TODO(Marcelo): We need to study how we can estimate the tokens for AudioUrl or ImageUrl.
+        return 0
 
-    return tokens
+    # Use generator expression for efficient summing
+    return sum(_part_tokens(part) for part in content)
+
+def _count_tokens_fast(s: str) -> int:
+    count = 0
+    in_token = False
+    for c in s:
+        if c in _TOKEN_SPLITTER_SET:
+            in_token = False
+        else:
+            if not in_token:
+                count += 1
+                in_token = True
+    return count
 
 
 _TOKEN_SPLIT_RE = re.compile(r'[\s",.:]+')
+
+_TOKEN_SPLITTER_SET = set(' \t\n\r",.:')
