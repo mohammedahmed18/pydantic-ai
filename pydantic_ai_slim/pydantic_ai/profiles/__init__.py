@@ -20,7 +20,7 @@ class ModelProfile:
     """Whether the model supports JSON schema output."""
     supports_json_object_output: bool = False
     """Whether the model supports JSON object output."""
-    default_structured_output_mode: StructuredOutputMode = 'tool'
+    default_structured_output_mode: StructuredOutputMode = "tool"
     """The default structured output mode to use for the model."""
     prompted_output_template: str = dedent(
         """
@@ -44,14 +44,24 @@ class ModelProfile:
 
     def update(self, profile: ModelProfile | None) -> Self:
         """Update this ModelProfile (subclass) instance with the non-default values from another ModelProfile instance."""
-        if not profile:
+        if profile is None:
             return self
-        field_names = set(f.name for f in fields(self))
-        non_default_attrs = {
-            f.name: getattr(profile, f.name)
-            for f in fields(profile)
-            if f.name in field_names and getattr(profile, f.name) != f.default
-        }
+
+        # Cache fields for self and profile for fast lookup
+        self_fields = {f.name for f in fields(self)}
+        non_default_attrs = {}
+
+        profile_fields = fields(profile)
+        for f in profile_fields:
+            if f.name in self_fields:
+                value = getattr(profile, f.name)
+                # Use object.__getattribute__ to avoid potential property overrides/conflicts,
+                # but we don't know if that's needed; using getattr is correct for dataclasses.
+                default = f.default
+                # Only check the default if one is specified (dataclasses use default_factory sometimes)
+                if value != default:
+                    non_default_attrs[f.name] = value
+
         return replace(self, **non_default_attrs)
 
 
